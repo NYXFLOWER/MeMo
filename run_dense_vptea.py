@@ -202,7 +202,7 @@ def test():
     parameter = Parameter(D, P, ll, tt0, uu, ww, CC, KK, RR, SS)
     x, info = optimizer(ff, variable, parameter)
 
-# test()
+test()
 
 # D, P, ll, tt0, uu, ww, CC, KK, RR, SS = None, None, None, None, None, None, None, None, None, None
 # v, p, t, e, a = None, None, None, None, None
