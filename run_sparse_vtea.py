@@ -1,12 +1,15 @@
 import numpy as np
 import ipopt
+from datetime import datetime
 
 MIN = -2.0e19
 MAX = 2.0e19
 
 
 class Parameter:
-    def __init__(self, D, P, jj, ll, tt0, uu, ww, mm, CC, KK, RR, SS):
+    def __init__(self, D, P, jj: np.array, ll: np.array,
+                 tt0: np.array, uu: np.array, ww: np.array, mm: np.array,
+                 CC: np.ndarray, KK: np.ndarray, RR: np.ndarray, SS: np.ndarray):
         self.D = D
         self.P = P
         self.ll = ll
@@ -56,7 +59,8 @@ class MeMoSparse:
         """
         The 'm' + 's' + 1 + 2*'l' linear and 'l' nonlinear constraints
         """
-        v = x[:self.var.m][self.para.vj]
+        v = x[:self.var.m]
+        vj = v[self.para.vj]
         t = x[self.var.start_idx[0]: self.var.start_idx[1]]
         e = x[self.var.start_idx[1]: self.var.start_idx[2]]
         a = x[self.var.start_idx[2]:]
@@ -64,7 +68,7 @@ class MeMoSparse:
         p = np.matmul(self.para.CC, e)
 
         return np.concatenate([
-            v - np.matmul(self.para.KK, e),
+            vj - np.matmul(self.para.KK, e),
             np.matmul(self.para.SS, v),
             [np.dot(self.para.mm, p)],
             np.divide(p, self.para.ww) - t,
@@ -72,102 +76,103 @@ class MeMoSparse:
         ])
 
     def jacobianstructure(self):
-        j, m, s, l, n, k = self.lj, self.var.m, self.para.s, self.var.l, self.var.n,self.var.k
+        """
+                :[0](m) :[1](l) :[2](n) :[:](k)
+        :[0](j) *       -       *       -
+        :[1](s) *       -       -       -
+        :[2](1) -       -       *       -
+        :[3](l) -       dia     *       -
+        :[:](l) -       dia     -       *
+        :return:
+        """
+        j, m, s, l, n, k = self.lj, self.var.m, self.para.s, self.var.l, self.var.n, self.var.k
         r_sidx, c_sidx = self.c_start_idx, self.var.start_idx
-        n_r, n_c = r_sidx[-1] + l, c_sidx + k
-        s = np.zeros((n_r, n_c))
-        s[:r_sidx[1], :c_sidx[0]] = np.ones((j+s, m))
+        n_r, n_c = r_sidx[-1] + l, c_sidx[-1] + k
 
-        # // TODO
-        s[r_sidx[2]: r_sidx[3], c_sidx[0]: c_sidx[1]] = np.ones((l, l))
+        ss = np.zeros((n_r, n_c))
+        ss[:r_sidx[1], :c_sidx[0]] = np.ones((j+s, m))                     # r=:, c=0
 
+        ss[r_sidx[2]:r_sidx[3], c_sidx[0]:c_sidx[1]] = np.eye(l)           # r=3, c=1
+        ss[r_sidx[3]:, c_sidx[0]:c_sidx[1]] = np.eye(l)                    # r=4, c=1
 
+        ss[:r_sidx[0], c_sidx[1]:c_sidx[2]] = np.ones((j, n))              # r=0, c=2
+        ss[r_sidx[1]:r_sidx[3], c_sidx[1]:c_sidx[2]] = np.ones((1+l, n))   # r=1:,c=2
+
+        ss[r_sidx[3]:, c_sidx[2]:] = np.ones((l, k))                       # r=:, c=3
+
+        return np.nonzero(ss)
 
     def jacobian(self, x):
         """
         The Jacobian of the constraints with shape (|constraints|, |x|)
         """
+        j, m, s, l, n, k = self.lj, self.var.m, self.para.s, self.var.l, self.var.n, self.var.k
 
         j1 = np.concatenate([
-            np.ones((self.var.m, self.var.m)),        # dv
-            np.zeros((self.var.m, self.var.l)),       # dt
-            np.negative(self.para.KK),                # de
-            np.zeros((self.var.m, self.var.k))        # da
-        ], axis=1)
+            np.ones((j, m)),
+            np.negative(self.para.KK)
+        ], axis=1).flatten()
 
-        j2 = np.concatenate([
-            self.para.SS,                                                  # dv
-            np.zeros((self.para.s, self.var.l + self.var.n + self.var.k))  # dt, de, da
-        ], axis=1)
+        j2 = self.para.SS.flatten()
 
-        j3 = np.concatenate([
-            np.zeros((1, self.var.m + self.var.l)),                             # dv, dt
-            np.dot(self.para.mm, self.para.CC),                              # de
-            np.zeros((1, self.var.k))    # da
-        ], axis=1)
+        j3 = np.dot(self.para.mm, self.para.CC).flatten()
 
         j4 = np.concatenate([
-            np.zeros((self.var.l, self.var.m)),                   # dv
-            np.negative(np.ones((self.var.l, self.var.l))),       # dp
-            np.zeros((self.var.l, self.var.l)),                   # dt
-            self.para.CC,                                         # de
-            np.zeros((self.var.l, self.var.k))                    # da
-        ], axis=1)
+            np.negative(self.para.ww.reshape((-1, 1))),
+            self.para.CC
+        ], axis=1).flatten()
 
+        a = x[self.var.start_idx[2]:]
+        tmp = np.multiply(np.log(2)*np.power(2, np.matmul(self.para.RR, a)), self.para.tt0)
         j5 = np.concatenate([
-            np.zeros((self.var.l, self.var.m)),                   # dv
-            np.multiply((-1/self.para.ww).reshape((-1, 1)), np.ones((self.var.l, self.var.l))),      # dp
-            np.ones((self.var.l, self.var.l)),                    # dt
-            np.zeros((self.var.l, self.var.n + self.var.k))       # de, da
-        ], axis=1)
-
-        tmp = np.multiply(-1*np.log(2)*np.power(2, np.matmul(self.para.RR, x[self.var.start_idx[3]:])), self.para.tt0)
-        j6 = np.concatenate([
-            np.zeros((self.var.l, self.var.m + self.var.l)),      # dv, dp
-            np.ones((self.var.l, self.var.l)),                    # dt
-            np.zeros((self.var.l, self.var.n)),                   # de
+            np.negative(np.ones((l, 1))),
             np.multiply(tmp.reshape((-1, 1)), self.para.RR)       # da
-        ], axis=1)
+        ], axis=1).flatten()
 
-        return np.concatenate([j1, j2, j3, j4, j5, j6], axis=0).flatten()
+        return np.concatenate([j1, j2, j3, j4, j5])
 
     def hessianstructure(self):
         """
         the structure of the hessian is of a lower triangular matrix.
+        shape of (|x|, |x|)
         """
-        return np.nonzero(np.tril(np.ones((self.var.len_x, self.var.len_x))))
+        k = self.var.k
+        row, col = np.nonzero(np.tril(np.ones((k, k))))
+
+        return row + self.c_start_idx[-1], col + self.var.start_idx[-1]
 
     def hessian(self, x, lagrange, obj_factor):
         """
         the hessian of the lagrangian
         :param lagrange: 1d-array with length of |j6|.shape[0]
         """
-        dim = self.var.len_x - self.var.k
-        H = -1 * np.power(np.log(2), 2) * np.multiply(self.para.tt0, np.matmul(self.para.RR, x[self.var.start_idx[3]:]))
+        a = x[self.var.start_idx[2]:]
+        H = np.power(np.log(2), 2) * np.multiply(self.para.tt0, np.matmul(self.para.RR, a))
         H = np.multiply(lagrange[-self.var.l:], H)
         H = np.multiply(H.reshape((-1, 1)), self.para.RR)
         H = np.matmul(H.T, self.para.RR)
-        H = np.concatenate([np.zeros((self.var.k, dim)), H], axis=1)
-        H = np.concatenate([np.zeros((dim, self.var.len_x)), H], axis=0)
 
-        row, col = self.hessianstructure()
-
-        return H[row, col]
+        return np.tril(H).flatten()
 
     def intermediate(self, alg_mod, iter_count, obj_value, inf_pr, inf_du, mu,
                      d_norm, regularization_size, alpha_du, alpha_pr, ls_trial):
         print("Objective value at iteration #%d is - %g" % (iter_count, obj_value))
 
+        # now = datetime.now()
+        # current_time = now.strftime("%H:%M:%S")
+        # print("Current Time =", current_time)
+
 
 def optimizer(ff: np.array, var: Variable, para: Parameter):
     lb = np.concatenate(
-        (para.ll, [MIN] * var.l, [para.D] * var.l, [MIN] * (var.n + var.k)))
-    ub = np.concatenate([para.uu, [MAX] * (2 * var.l + var.n + var.k)])
+        (para.ll, [para.D]*var.l, [0]*var.n, [MIN]*var.k))
+    ub = np.concatenate([para.uu, [MAX]*(var.l + var.n + var.k)])
 
+    j = para.vj.shape[0]
     cl = np.concatenate(
-        [[MIN] * var.m, np.zeros(para.s + 1 + 3 * var.l)])
+        [[MIN] * j, np.zeros(para.s + 1 + 2 * var.l)])
     cu = np.concatenate(
-        [np.zeros(var.m + para.s), [para.P], np.zeros(3 * var.l)])
+        [np.zeros(j + para.s), [para.P], np.zeros(2 * var.l)])
 
     # define problem
     nlp = ipopt.problem(
@@ -205,13 +210,14 @@ def optimizer(ff: np.array, var: Variable, para: Parameter):
 def test():
     m, l, n, k = 3, 5, 7, 11
     v = np.ones(m)
-    p = np.ones(l)
     t = np.ones(l)
     e = np.ones(n)
     a = np.ones(k)
+
     ll = np.ones(m) * (-10)
+    jj = np.array([0, 1])
     uu = np.ones(m) * 10
-    KK = np.abs(np.random.randn(m, n))
+    KK = np.abs(np.random.randn(jj.shape[0], n))
     s = 13
     SS = np.abs(np.random.randn(s, m))
     P = 100
@@ -221,16 +227,54 @@ def test():
     RR = np.abs(np.random.randn(l, k))
     tt0 = np.abs(np.random.randn(l))
     ff = np.ones(m)
-    variable = Variable(v, p, t, e, a)
-    parameter = Parameter(D, P, ll, tt0, uu, ww, CC, KK, RR, SS)
+    mm = np.ones(l)
+    variable = Variable(v, t, e, a)
+    parameter = Parameter(D, P, jj, ll, tt0, uu, ww, mm, CC, KK, RR, SS)
     x, info = optimizer(ff, variable, parameter)
 
-test()
+# ######################################
+# run with toy data
+# test()
 
-# D, P, ll, tt0, uu, ww, CC, KK, RR, SS = None, None, None, None, None, None, None, None, None, None
-# v, p, t, e, a = None, None, None, None, None
-# ff = None
-#
-# variable = Variable(v, p, t, e, a)
-# parameter = Parameter(D, P, ll, tt0, uu, ww, CC, KK, RR, SS)
-# x, info = optimizer(ff, variable, parameter)
+# ######################################
+# run with toy mini data
+import os
+
+basepath = 'regulateme/data_mini'
+
+SS = np.load(os.path.join(basepath, 'SS.npy'))
+RR = np.load(os.path.join(basepath, 'RR.npy'))
+CC = np.load(os.path.join(basepath, 'CC.npy'))
+KK = np.load(os.path.join(basepath, 'KK.npy'))
+ll = np.load(os.path.join(basepath, 'll.npy'))
+uu = np.load(os.path.join(basepath, 'uu.npy'))
+ff = np.load(os.path.join(basepath, 'ff.npy'))
+ww = np.load(os.path.join(basepath, 'ww.npy'))
+tt0 = np.load(os.path.join(basepath, 'tt0.npy'))
+mm = np.load(os.path.join(basepath, 'mm.npy'))
+
+D = float(np.load(os.path.join(basepath, 'D.npy')))
+P = float(np.load(os.path.join(basepath, 'P.npy')))
+
+jj = np.array([0, 1, 3, 4])   # the index of v for the constraint of "vj-ke<=0"
+KK = KK[:jj.shape[0]]
+
+v = np.zeros(len(ll))
+p = D*np.ones(len(tt0))
+e = D*np.ones(CC.shape[1])
+t = D*np.ones(len(tt0))
+a = np.zeros(RR.shape[1])
+
+variable = Variable(v, t, e, a)
+parameter = Parameter(D, P, jj, ll, tt0, uu, ww, mm, CC, KK, RR, SS)
+
+# print("======== only nonlinear and linear constraints ==========")
+# _, info = optimizer(ff, variable, parameter)
+# print(info)
+
+print("======== only with linear constraints ==========")
+_, info = optimizer(ff, variable, parameter)
+print(f"info: ")
+
+
+
