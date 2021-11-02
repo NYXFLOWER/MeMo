@@ -1,3 +1,6 @@
+# change bounds to variables
+# change np to sp.csr
+
 import numpy as np
 import ipopt
 from datetime import datetime
@@ -26,12 +29,20 @@ class Parameter:
 
 
 class Variable:
-    def __init__(self, v, t, e, a):
+    def __init__(self, v, t, e, a) -> None:
         self.x0 = np.concatenate((v, t, e, a))
         self.len_x = self.x0.shape[0]
 
         self.m, self.l, self.n, self.k = v.shape[0], t.shape[0], e.shape[0], a.shape[0]
         self.start_idx = [self.m, self.m+self.l, self.m+self.l+self.n]
+
+
+class Bound:
+    def __init__(self, lb, ub, cl, cu) -> None:
+        self.lb = lb
+        self.ub = ub
+        self.cl = cl
+        self.cu = cu
 
 
 class MeMoSparse:
@@ -158,12 +169,12 @@ class MeMoSparse:
                      d_norm, regularization_size, alpha_du, alpha_pr, ls_trial):
         print("Objective value at iteration #%d is - %g" % (iter_count, obj_value))
 
-        # now = datetime.now()
-        # current_time = now.strftime("%H:%M:%S")
-        # print("Current Time =", current_time)
+        now = datetime.now()
+        current_time = now.strftime("%H:%M:%S")
+        print("Current Time =", current_time)
 
 
-def optimizer(ff: np.array, var: Variable, para: Parameter):
+def optimizer(ff: np.array, var: Variable, para: Parameter, bound: Bound):
     lb = np.concatenate(
         (para.ll, [para.D]*var.l, [0]*var.n, [MIN]*var.k))
     ub = np.concatenate([para.uu, [MAX]*(var.l + var.n + var.k)])
@@ -206,6 +217,10 @@ def optimizer(ff: np.array, var: Variable, para: Parameter):
 
     return x, info
 
+def hhh(jio) -> str:
+    return 'hhh'
+
+
 
 def test():
     m, l, n, k = 3, 5, 7, 11
@@ -234,47 +249,7 @@ def test():
 
 # ######################################
 # run with toy data
-# test()
-
-# ######################################
-# run with toy mini data
-import os
-
-basepath = 'regulateme/data_mini'
-
-SS = np.load(os.path.join(basepath, 'SS.npy'))
-RR = np.load(os.path.join(basepath, 'RR.npy'))
-CC = np.load(os.path.join(basepath, 'CC.npy'))
-KK = np.load(os.path.join(basepath, 'KK.npy'))
-ll = np.load(os.path.join(basepath, 'll.npy'))
-uu = np.load(os.path.join(basepath, 'uu.npy'))
-ff = np.load(os.path.join(basepath, 'ff.npy'))
-ww = np.load(os.path.join(basepath, 'ww.npy'))
-tt0 = np.load(os.path.join(basepath, 'tt0.npy'))
-mm = np.load(os.path.join(basepath, 'mm.npy'))
-
-D = float(np.load(os.path.join(basepath, 'D.npy')))
-P = float(np.load(os.path.join(basepath, 'P.npy')))
-
-jj = np.array([0, 1, 3, 4])   # the index of v for the constraint of "vj-ke<=0"
-KK = KK[:jj.shape[0]]
-
-v = np.zeros(len(ll))
-p = D*np.ones(len(tt0))
-e = D*np.ones(CC.shape[1])
-t = D*np.ones(len(tt0))
-a = np.zeros(RR.shape[1])
-
-variable = Variable(v, t, e, a)
-parameter = Parameter(D, P, jj, ll, tt0, uu, ww, mm, CC, KK, RR, SS)
-
-# print("======== only nonlinear and linear constraints ==========")
-# _, info = optimizer(ff, variable, parameter)
-# print(info)
-
-print("======== only with linear constraints ==========")
-_, info = optimizer(ff, variable, parameter)
-print(f"info: ")
+test()
 
 
 
